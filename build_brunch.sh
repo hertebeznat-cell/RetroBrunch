@@ -55,6 +55,7 @@ fi
 
 mkdir -p ./chroot/home/chronos/image/tmp || { echo "Failed to create image directory"; exit 1; }
 cp -r ./efi-partition ./chroot/home/chronos/image/ || { echo "Failed to copy the efi partition directory"; exit 1; }
+cp -r ./legacy-bios ./chroot/home/chronos/image/ || { echo "Failed to copy the RetroBrunch legacy BIOS files"; exit 1; }
 chown -R 1000:1000 ./chroot/home/chronos/image || { echo "Failed to fix image directory ownership"; exit 1; }
 
 chmod 0777 ./chroot/home/chronos || { echo "Failed to fix chronos directory permissions"; exit 1; }
@@ -330,6 +331,10 @@ mount --make-slave ./chroot/tmp || { echo "Failed to mount tmp directory in chro
 
 cp ./scripts/build-init ./chroot/init || { echo "Failed to copy the chroot init script"; exit 1; }
 NTHREADS="$NTHREADS" PATH=/usr/sbin:/usr/bin:sbin:/bin chroot --userspec=1000:1000 ./chroot /init || { echo "The chroot script failed"; exit 1; }
+scripts/build-bios-image.sh ./chroot/home/chronos/brunch ./chroot/home/chronos/image/legacy-bios || { echo "Failed to build RetroBrunch BIOS image"; exit 1; }
+cp ./legacy-bios/gptmbr.bin ./chroot/home/chronos/brunch/ || { echo "Failed to copy RetroBrunch GPT MBR"; exit 1; }
+rm -f ./out/brunch_retro_*.tar.gz
+tar --owner=0 --group=0 -zcf ./out/brunch_retro_$(date +"%Y%m%d").tar.gz -C ./chroot/home/chronos/brunch . || { echo "Failed to create RetroBrunch archive"; exit 1; }
 
 umount ./chroot/tmp || { echo "Failed to umount tmp directory from chroot"; exit 1; }
 umount ./chroot/dev/shm || { echo "Failed to umount dev/shm directory from chroot"; exit 1; }

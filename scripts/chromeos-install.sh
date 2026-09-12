@@ -13,6 +13,7 @@ usage()
 	echo "-dst (destination), --destination (destination)	Device (e.g. /dev/sda) or Disk image file (e.g. chromeos.img)"
 	echo "-s (disk image size), --size (disk image size)	Disk image output only: final image size in GB (default=14)"
 	echo "-l, --legacy_boot					Use legacy efi partition (no secure boot support)"
+	echo "--bios                                             Use experimental RetroBrunch Legacy BIOS boot"
 	echo "-h, --help					Display this menu"
 }
 
@@ -236,7 +237,13 @@ for (( i=1; i<=12; i++ )); do
 		;;
 		12)
 			source_start=0
-			if [ -z legacy_boot ]; then image="$(dirname $0)/efi_secure.img"; else image="$(dirname $0)/efi_legacy.img"; fi
+			if [ ! -z "$retro_bios" ]; then
+                        image="$(dirname $0)/bios_boot.img"
+                    elif [ -z "$legacy_boot" ]; then
+                        image="$(dirname $0)/efi_secure.img"
+                    else
+                        image="$(dirname $0)/efi_legacy.img"
+                    fi
 			size=$(du --apparent-size -B 512 $image | sed 's/\t.*//g')
 		;;
 		*)
@@ -251,6 +258,9 @@ for (( i=1; i<=12; i++ )); do
 		dd if="$image" ibs=512 count="$size" skip="$source_start" 2> /dev/null | pv -s $(( $size * 512 )) | dd of="$destination" obs=512 seek="$destination_start" conv=notrunc 2> /dev/null || error $i
 	fi
 done
+if [ ! -z "$retro_bios" ]; then
+    dd if="$(dirname $0)/gptmbr.bin" of="$destination" bs=440 count=1 conv=notrunc 2> /dev/null || { echo "Failed to write RetroBrunch GPT MBR"; exit 1; }
+fi
 }
 
 singleboot()
@@ -328,7 +338,13 @@ for (( i=1; i<=12; i++ )); do
 			continue
 		;;
 		12)
-			if [ -z legacy_boot ]; then source_part="$(dirname $0)/efi_secure.img"; else source_part="$(dirname $0)/efi_legacy.img"; fi
+			if [ ! -z "$retro_bios" ]; then
+                        source_part="$(dirname $0)/bios_boot.img"
+                    elif [ -z "$legacy_boot" ]; then
+                        source_part="$(dirname $0)/efi_secure.img"
+                    else
+                        source_part="$(dirname $0)/efi_legacy.img"
+                    fi
 			size=$(ls -lp --block-size=512 "$source_part" | cut -d" " -f5)
 		;;
 		*)
