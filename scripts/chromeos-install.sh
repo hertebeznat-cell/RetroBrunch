@@ -178,7 +178,11 @@ write_base_table()
   cgpt add -i 4 -S 0 -T 15 -P 0 "${target}"
   cgpt add -i 6 -S 0 -T 15 -P 0 "${target}"
   cgpt boot -p -i 12 "${target}"
+  if [ ! -z "$retro_bios" ]; then
+  cgpt add -i 12 -B 1 "${target}"
+else
   cgpt add -i 12 -B 0 "${target}"
+fi
   cgpt show "${target}"
 }
 
