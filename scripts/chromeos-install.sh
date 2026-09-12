@@ -511,6 +511,9 @@ else
 			-l | --legacy_boot)
 			legacy_boot=1
 			;;
+			--bios)
+			retro_bios=1
+			;;
 			-h | --help)
 			usage
 			exit 0
