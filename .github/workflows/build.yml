@@ -179,9 +179,7 @@ jobs:
 
         run: |
 
-          tar zcf /tmp/built-kernel-${{ matrix.kernel }}.tar.gz \
-
-            kernels/${{ matrix.kernel }}
+          tar zcf /tmp/built-kernel-${{ matrix.kernel }}.tar.gz kernels/${{ matrix.kernel }}
 
 
 
