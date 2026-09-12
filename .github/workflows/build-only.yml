@@ -2,6 +2,9 @@ name: Build RetroBrunch from existing kernels
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - retrobrunch
 
 jobs:
   build-retrobrunch:

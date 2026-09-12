@@ -4,24 +4,7 @@ name: Build RetroBrunch
 
 
 on:
-
   workflow_dispatch:
-
-  push:
-
-    branches:
-
-      - retrobrunch
-
-
-
-concurrency:
-
-  group: retrobrunch-${{ github.ref }}
-
-  cancel-in-progress: true
-
-
 
 jobs:
 
