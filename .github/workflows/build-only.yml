@@ -1,0 +1,57 @@
+name: Build RetroBrunch from existing kernels
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-retrobrunch:
+    name: Build RetroBrunch
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y gcc-12 g++-12 git fakeroot build-essential ncurses-dev xz-utils libssl-dev bc flex libelf-dev bison sbsigntool python3-protobuf rdfind zstd pv syslinux syslinux-common mtools dosfstools
+
+      - name: Checkout RetroBrunch
+        uses: actions/checkout@v6
+        with:
+          ref: retrobrunch
+
+      - name: Download existing built kernels
+        uses: actions/download-artifact@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: hertebeznat-cell/RetroBrunch
+          run-id: 34700004829
+          pattern: built-kernel-*
+          path: /tmp
+          merge-multiple: false
+
+      - name: Restore built kernels
+        run: |
+          for file in /tmp/built-kernel-*/built-kernel-*.tar.gz
+          do
+            tar zxf "$file"
+          done
+
+      - name: Build RetroBrunch
+        run: |
+          chmod +x scripts/build-bios-image.sh
+          sudo bash build_brunch.sh
+
+      - name: Show output
+        run: ls -lah out/
+
+      - name: Upload RetroBrunch
+        uses: actions/upload-artifact@v7
+        with:
+          name: retrobrunch-r151
+          path: |
+            out/brunch_retro_*.tar.gz
+            out/brunch_r*.tar.gz
+          if-no-files-found: error
