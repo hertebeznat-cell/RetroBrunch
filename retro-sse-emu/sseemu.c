@@ -15,7 +15,7 @@
 #error "retro-sse-emu currently supports x86_64 only"
 #endif
 
-#define RETRO_SSE_VERSION "0.2"
+#define RETRO_SSE_VERSION "0.3"
 
 typedef union {
     uint8_t  u8[16];
@@ -300,6 +300,51 @@ static int emulate_crc32(ucontext_t *uc, const uint8_t *ip) {
     set_rip(uc,d.p); return 1;
 }
 
+static int emulate_pmovx(ucontext_t *uc, struct dec *d, uint8_t op) {
+    unsigned src_bytes = 0;
+    int is_signed = (op >= 0x20 && op <= 0x25);
+    switch (op) {
+        case 0x20: case 0x30: src_bytes = 8; break;  /* byte -> word */
+        case 0x21: case 0x31: src_bytes = 4; break;  /* byte -> dword */
+        case 0x22: case 0x32: src_bytes = 2; break;  /* byte -> qword */
+        case 0x23: case 0x33: src_bytes = 8; break;  /* word -> dword */
+        case 0x24: case 0x34: src_bytes = 4; break;  /* word -> qword */
+        case 0x25: case 0x35: src_bytes = 8; break;  /* dword -> qword */
+        default: return 0;
+    }
+
+    xmm128_t src, dst;
+    memset(&src, 0, sizeof(src));
+    memset(&dst, 0, sizeof(dst));
+    if (d->mod == 3) {
+        if (load_xmm(uc, d->rm, &src)) return 0;
+    } else {
+        int ok = 0;
+        uintptr_t ea = calc_ea(uc, d, &ok);
+        if (!ok) return 0;
+        memcpy(&src, (const void *)ea, src_bytes);
+    }
+
+    switch (op) {
+        case 0x20: for (int i=0;i<8;i++) dst.i16[i] = is_signed ? (int16_t)src.i8[i] : (int16_t)src.u8[i]; break;
+        case 0x21: for (int i=0;i<4;i++) dst.i32[i] = is_signed ? (int32_t)src.i8[i] : (int32_t)src.u8[i]; break;
+        case 0x22: for (int i=0;i<2;i++) dst.i64[i] = is_signed ? (int64_t)src.i8[i] : (int64_t)src.u8[i]; break;
+        case 0x23: for (int i=0;i<4;i++) dst.i32[i] = is_signed ? (int32_t)src.i16[i] : (int32_t)src.u16[i]; break;
+        case 0x24: for (int i=0;i<2;i++) dst.i64[i] = is_signed ? (int64_t)src.i16[i] : (int64_t)src.u16[i]; break;
+        case 0x25: for (int i=0;i<2;i++) dst.i64[i] = is_signed ? (int64_t)src.i32[i] : (int64_t)src.u32[i]; break;
+        case 0x30: for (int i=0;i<8;i++) dst.u16[i] = src.u8[i]; break;
+        case 0x31: for (int i=0;i<4;i++) dst.u32[i] = src.u8[i]; break;
+        case 0x32: for (int i=0;i<2;i++) dst.u64[i] = src.u8[i]; break;
+        case 0x33: for (int i=0;i<4;i++) dst.u32[i] = src.u16[i]; break;
+        case 0x34: for (int i=0;i<2;i++) dst.u64[i] = src.u16[i]; break;
+        case 0x35: for (int i=0;i<2;i++) dst.u64[i] = src.u32[i]; break;
+        default: return 0;
+    }
+    if (store_xmm(uc, d->reg, &dst)) return 0;
+    set_rip(uc, d->p);
+    return 1;
+}
+
 static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
     struct dec d; parse_prefixes(&d,ip);
     if(!d.p66 || *d.p++!=0x0f) return 0;
@@ -318,7 +363,10 @@ static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
 
     if(map==0x38){
         uint8_t op=*d.p++;
-        parse_modrm(&d); xmm128_t dst,src;
+        parse_modrm(&d);
+        if ((op >= 0x20 && op <= 0x25) || (op >= 0x30 && op <= 0x35))
+            return emulate_pmovx(uc, &d, op);
+        xmm128_t dst,src;
         if(load_xmm(uc,d.reg,&dst)||read_rm128(uc,&d,&src)) return 0;
         switch(op){
             case 0x17:{uint64_t a=(dst.u64[0]&src.u64[0])|(dst.u64[1]&src.u64[1]);uint64_t b=((~dst.u64[0])&src.u64[0])|((~dst.u64[1])&src.u64[1]);greg_t*ef=&uc->uc_mcontext.gregs[REG_EFL];uint64_t f=(uint64_t)*ef;const uint64_t M=(1u<<0)|(1u<<2)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<11);f&=~M;if(!a)f|=1u<<6;if(!b)f|=1u<<0;*ef=(greg_t)f;break;}

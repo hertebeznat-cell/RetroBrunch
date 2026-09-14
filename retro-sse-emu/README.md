@@ -1,8 +1,8 @@
-# Retro SSE compatibility layer v0.2
+# Retro SSE compatibility layer v0.3
 
 Experimental x86-64 compatibility layer for RetroBrunch/Pineview systems that lack SSE4.1/SSE4.2/POPCNT.
 
-## v0.2 goals
+## v0.3 goals
 
 - Keep the proven SIGILL emulation path from v0.1.
 - Fix preload for secure-execution processes: install in `/lib64`, preload by basename, set mode 4755.
@@ -35,3 +35,7 @@ Expected preload line:
 `libretro_sse.so`
 
 Expected library permissions begin with `-rwsr-xr-x` (4755). The setuid mode is intentional: glibc secure-execution mode ignores unsafe preload paths and only accepts preloads from standard library directories with this bit set.
+
+
+## v0.3
+Added full SSE4.1 PMOVSX*/PMOVZX* family (0F 38 20-25, 30-35), including PMOVSXBQ observed in ChromeOS sed on Pineview.
