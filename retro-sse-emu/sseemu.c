@@ -10,12 +10,13 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <dlfcn.h>
 
 #if !defined(__x86_64__)
 #error "retro-sse-emu currently supports x86_64 only"
 #endif
 
-#define RETRO_SSE_VERSION "0.3"
+#define RETRO_SSE_VERSION "0.4"
 
 typedef union {
     uint8_t  u8[16];
@@ -400,12 +401,89 @@ static void sigill_handler(int sig, siginfo_t *si, void *vctx) {
     _exit(132);
 }
 
+
+typedef int (*real_sigaction_fn_t)(int, const struct sigaction *, struct sigaction *);
+typedef sighandler_t (*real_signal_fn_t)(int, sighandler_t);
+static real_sigaction_fn_t real_sigaction_fn = NULL;
+static real_signal_fn_t real_signal_fn = NULL;
+static int installing_sigill = 0;
+
+static real_sigaction_fn_t resolve_real_sigaction(void) {
+    if (!real_sigaction_fn)
+        real_sigaction_fn = (real_sigaction_fn_t)dlsym(RTLD_NEXT, "sigaction");
+    return real_sigaction_fn;
+}
+
+static void build_sigill_action(struct sigaction *sa) {
+    memset(sa, 0, sizeof(*sa));
+    sa->sa_sigaction = sigill_handler;
+    sigemptyset(&sa->sa_mask);
+    sa->sa_flags = SA_SIGINFO | SA_ONSTACK;
+}
+
+static int force_sigill_handler(struct sigaction *oldact) {
+    real_sigaction_fn_t fn = resolve_real_sigaction();
+    if (!fn) { errno = ENOSYS; return -1; }
+    struct sigaction sa;
+    build_sigill_action(&sa);
+    installing_sigill = 1;
+    int rc = fn(SIGILL, &sa, oldact);
+    installing_sigill = 0;
+    return rc;
+}
+
+static void log_sigill_guard(const char *api) {
+    char b[192], *p=b, *e=b+sizeof(b)-1;
+    p=append_str(p,e,"retro-sse v" RETRO_SSE_VERSION ": blocked SIGILL handler replacement via ");
+    p=append_str(p,e,api);
+    p=append_str(p,e," pid=");
+    p=append_u64_dec(p,e,(uint64_t)getpid());
+    p=append_str(p,e," comm=");
+    p=append_str(p,e,proc_name);
+    if(p<e)*p++='\n';
+    log_raw(b,(size_t)(p-b));
+}
+
+int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+    real_sigaction_fn_t fn = resolve_real_sigaction();
+    if (!fn) { errno = ENOSYS; return -1; }
+    if (signum != SIGILL || installing_sigill || act == NULL)
+        return fn(signum, act, oldact);
+
+    /* Preserve our emulator handler.  Still report the currently installed
+       action through oldact so callers that only save/restore state work. */
+    if (oldact && fn(SIGILL, NULL, oldact) != 0)
+        return -1;
+    log_sigill_guard("sigaction");
+    return force_sigill_handler(NULL);
+}
+
+int __sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+    return sigaction(signum, act, oldact);
+}
+
+sighandler_t signal(int signum, sighandler_t handler) {
+    if (signum == SIGILL) {
+        struct sigaction oldact;
+        (void)handler;
+        if (resolve_real_sigaction() && real_sigaction_fn(SIGILL, NULL, &oldact) == 0) {
+            log_sigill_guard("signal");
+            if (force_sigill_handler(NULL) == 0)
+                return oldact.sa_handler;
+        }
+        return SIG_ERR;
+    }
+    if (!real_signal_fn)
+        real_signal_fn = (real_signal_fn_t)dlsym(RTLD_NEXT, "signal");
+    if (!real_signal_fn) { errno = ENOSYS; return SIG_ERR; }
+    return real_signal_fn(signum, handler);
+}
+
 __attribute__((constructor))
 static void retro_sse_init(void) {
     init_persistent_log();
     stack_t ss; memset(&ss,0,sizeof(ss)); ss.ss_sp=altstack_mem; ss.ss_size=sizeof(altstack_mem); (void)sigaltstack(&ss,NULL);
-    struct sigaction sa; memset(&sa,0,sizeof(sa)); sa.sa_sigaction=sigill_handler; sigemptyset(&sa.sa_mask); sa.sa_flags=SA_SIGINFO|SA_ONSTACK;
-    if(sigaction(SIGILL,&sa,&old_sigill)==0){
+    if(force_sigill_handler(&old_sigill)==0){
         char b[160],*p=b,*e=b+sizeof(b)-1;
         p=append_str(p,e,"retro-sse v" RETRO_SSE_VERSION ": active pid=");p=append_u64_dec(p,e,(uint64_t)getpid());p=append_str(p,e," comm=");p=append_str(p,e,proc_name);if(p<e)*p++='\n';log_raw(b,(size_t)(p-b));
     }

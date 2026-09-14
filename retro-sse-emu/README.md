@@ -39,3 +39,11 @@ Expected library permissions begin with `-rwsr-xr-x` (4755). The setuid mode is 
 
 ## v0.3
 Added full SSE4.1 PMOVSX*/PMOVZX* family (0F 38 20-25, 30-35), including PMOVSXBQ observed in ChromeOS sed on Pineview.
+
+
+## v0.4
+
+- Protects the SIGILL emulator handler from replacement through `sigaction()`, `__sigaction()`, or `signal()`.
+- Logs attempts to replace the SIGILL handler.
+- Keeps v0.3 PMOVSX/PMOVZX emulation and memory operand decoding.
+- Constructor installs the protected handler through libc's real `sigaction()`.
