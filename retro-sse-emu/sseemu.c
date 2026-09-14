@@ -25,7 +25,7 @@ static uint8_t altstack_mem[64 * 1024];
 static void log_msg(const char *s) {
     size_t n = 0;
     while (s[n]) n++;
-    (void)write(STDERR_FILENO, s, n);
+    ssize_t wr = write(STDERR_FILENO, s, n);`r`n    (void)wr;
 }
 
 static void log_hex64(uint64_t v) {
@@ -35,7 +35,7 @@ static void log_hex64(uint64_t v) {
         b[17 - i] = h[v & 0xf];
         v >>= 4;
     }
-    (void)write(STDERR_FILENO, b, 18);
+    ssize_t wr = write(STDERR_FILENO, b, 18);`r`n    (void)wr;
 }
 
 static void fatal_unsupported(ucontext_t *uc, const uint8_t *ip) {
@@ -48,7 +48,7 @@ static void fatal_unsupported(ucontext_t *uc, const uint8_t *ip) {
     for (int i = 0; i < 12; i++) {
         uint8_t x = ip[i];
         out[0] = h[x >> 4]; out[1] = h[x & 15]; out[2] = ' ';
-        (void)write(STDERR_FILENO, out, 3);
+        ssize_t wr = write(STDERR_FILENO, out, 3);`r`n        (void)wr;
     }
     log_msg("\n");
     _exit(132);
@@ -369,3 +369,4 @@ static void retro_sse_init(void) {
     if (sigaction(SIGILL, &sa, &old_sigill) == 0)
         log_msg("retro-sse: SIGILL compatibility layer active\n");
 }
+
