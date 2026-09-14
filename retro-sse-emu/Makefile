@@ -12,7 +12,7 @@ libretro_sse.so: sseemu.c
 check: libretro_sse.so
 	@echo "Dynamic dependencies:"
 	@readelf -d libretro_sse.so | grep NEEDED || true
-	@echo "Checking that the emulator itself contains no unsupported instructions..."
+	@echo "Checking emulator binary for unsupported ISA..."
 	@if objdump -d -M intel libretro_sse.so | grep -E '\b(pinsrb|pinsrd|pinsrq|pextrb|pextrd|pextrq|pminud|pmaxud|ptest|pmulld|pcmpistri|pcmpestri|crc32|popcnt|avx|v[a-z0-9]+)\b'; then \
 		echo "ERROR: unsupported instruction found in libretro_sse.so"; exit 1; \
 	fi

@@ -1,39 +1,37 @@
-# RetroBrunch SSE compatibility layer
+# Retro SSE compatibility layer v0.2
 
-Experimental userspace compatibility layer for old x86-64 CPUs such as Intel Atom D4xx/D5xx (Pineview) that lack SSE4.1/SSE4.2.
+Experimental x86-64 compatibility layer for RetroBrunch/Pineview systems that lack SSE4.1/SSE4.2/POPCNT.
 
-The library installs a `SIGILL` handler. When an unsupported instruction traps, the handler decodes the instruction, emulates its effect using baseline x86-64/SSE2-safe C code, updates the saved register/XMM state in `ucontext`, advances RIP, and resumes the process.
+## v0.2 goals
 
-Initial instruction coverage:
+- Keep the proven SIGILL emulation path from v0.1.
+- Fix preload for secure-execution processes: install in `/lib64`, preload by basename, set mode 4755.
+- Persist unsupported-SIGILL diagnostics when possible, so one boot can leave useful evidence without filming every line.
+- Add more common x86-64-v2-era instructions.
 
-- SSE4.1 `PINSRB`
-- SSE4.1 `PINSRD` / `PINSRQ`
-- SSE4.1 `PEXTRB`
-- SSE4.1 `PEXTRD` / `PEXTRQ`
-- SSE4.1 `PMINUD`
-- SSE4.1 `PMULLD`
-- SSE4.1 `PTEST`
+Current emulation includes PINSRB, PINSRD/Q, PEXTRB, PEXTRD/Q, PTEST, PMULDQ, PCMPEQQ,
+PACKUSDW, PCMPGTQ, PMINSB/PMINSD/PMINUW/PMINUD, PMAXSB/PMAXSD/PMAXUW/PMAXUD,
+PMULLD, BLENDPS/BLENDPD/PBLENDW, POPCNT, and CRC32/CRC32C instruction forms.
 
-Unknown `SIGILL` instructions are logged with RIP and the first 12 instruction bytes, then the process exits with status 132. This is intentional for the prototype: it gives the next opcode that must be implemented instead of silently corrupting state.
+Unknown SIGILLs are logged with PID, process name, RIP, RFLAGS, and 15 opcode bytes, then the process exits 132.
+The layer does **not** blindly skip unknown instructions because that would corrupt program state.
 
-## Build
+Preferred persistent log target:
+`/mnt/stateful_partition/unencrypted/retro-sse.log`
+Fallbacks: `/var/log/retro-sse.log`, then `/tmp/retro-sse.log`.
 
-```sh
-make
-make check
-```
-
-The build deliberately disables SSE3, SSSE3, SSE4, AVX and vectorization for the compatibility library itself.
-
-## Install into a mounted ChromeOS ROOT-A
+## Install to an offline ChromeOS ROOT-A
 
 ```sh
-sudo mount -o remount,rw /mnt/roota
-sudo ./install-sseemu.sh /mnt/roota ./libretro_sse.so
+mount /dev/sda3 /mnt/roota
+./install-sseemu.sh /mnt/roota ./libretro_sse.so
+cat /mnt/roota/etc/ld.so.preload
+ls -l /mnt/roota/lib64/libretro_sse.so
 sync
-sudo mount -o remount,ro /mnt/roota
+umount /mnt/roota
 ```
 
-The installer places the library at `/lib64/libretro_sse.so` and appends it to `/etc/ld.so.preload`.
+Expected preload line:
+`libretro_sse.so`
 
-This is an experimental prototype. Keep a ROOT-A backup or recovery path. It does not yet emulate the full SSE4.1/SSE4.2 ISA and does not help static executables or faults that happen in the dynamic loader before constructors run.
+Expected library permissions begin with `-rwsr-xr-x` (4755). The setuid mode is intentional: glibc secure-execution mode ignores unsafe preload paths and only accepts preloads from standard library directories with this bit set.

@@ -16,7 +16,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: retrobrunch
-
       - name: Build
         working-directory: retro-sse-emu
         run: |
@@ -24,7 +23,6 @@ jobs:
           make check
           file libretro_sse.so
           sha256sum libretro_sse.so
-
       - name: Package
         run: |
           mkdir -p out
@@ -32,7 +30,6 @@ jobs:
           cp retro-sse-emu/install-sseemu.sh out/
           cp retro-sse-emu/README.md out/
           tar -C out -czf retro-sse-emu-pineview.tar.gz .
-
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
