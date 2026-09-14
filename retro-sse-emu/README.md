@@ -1,4 +1,4 @@
-# Retro SSE compatibility layer v0.3
+# Retro SSE compatibility layer v0.6
 
 Experimental x86-64 compatibility layer for RetroBrunch/Pineview systems that lack SSE4.1/SSE4.2/POPCNT.
 
@@ -55,3 +55,11 @@ Added full SSE4.1 PMOVSX*/PMOVZX* family (0F 38 20-25, 30-35), including PMOVSXB
 - Unknown SIGILLs are forwarded to the ChromeOS downstream handler.
 - If a downstream handler returns without advancing RIP, Retro SSE terminates the process instead of looping forever on the same illegal instruction.
 - Registration logging is rate-limited to reduce early-boot log spam.
+
+
+## v0.6
+
+- Added PBLENDVB (0F 38 10) observed in ChromeOS `dbus-daemon`.
+- Added BLENDVPS/BLENDVPD (0F 38 14/15) using implicit XMM0 mask.
+- Added ROUNDPS/ROUNDPD/ROUNDSS/ROUNDSD (0F 3A 08-0B), including ROUNDSS observed in ChromeOS `imageloader`.
+- Rounding honors the immediate rounding mode or MXCSR rounding control when requested.

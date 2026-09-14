@@ -16,7 +16,7 @@
 #error "retro-sse-emu currently supports x86_64 only"
 #endif
 
-#define RETRO_SSE_VERSION "0.5"
+#define RETRO_SSE_VERSION "0.6"
 
 typedef union {
     uint8_t  u8[16];
@@ -346,6 +346,82 @@ static int emulate_pmovx(ucontext_t *uc, struct dec *d, uint8_t op) {
     return 1;
 }
 
+
+static unsigned sse_round_mode(ucontext_t *uc, uint8_t imm) {
+    if (imm & 0x04) {
+        if (uc->uc_mcontext.fpregs)
+            return (unsigned)((uc->uc_mcontext.fpregs->mxcsr >> 13) & 3u);
+        return 0;
+    }
+    return imm & 3u;
+}
+
+static float round_float_x87(float x, unsigned mode) {
+    unsigned short oldcw, newcw;
+    float out;
+    __asm__ volatile("fnstcw %0" : "=m"(oldcw));
+    newcw = (unsigned short)((oldcw & ~(3u << 10)) | ((mode & 3u) << 10));
+    __asm__ volatile("fldcw %0" :: "m"(newcw));
+    __asm__ volatile("flds %1; frndint; fstps %0" : "=m"(out) : "m"(x) : "st");
+    __asm__ volatile("fldcw %0" :: "m"(oldcw));
+    return out;
+}
+
+static double round_double_x87(double x, unsigned mode) {
+    unsigned short oldcw, newcw;
+    double out;
+    __asm__ volatile("fnstcw %0" : "=m"(oldcw));
+    newcw = (unsigned short)((oldcw & ~(3u << 10)) | ((mode & 3u) << 10));
+    __asm__ volatile("fldcw %0" :: "m"(newcw));
+    __asm__ volatile("fldl %1; frndint; fstpl %0" : "=m"(out) : "m"(x) : "st");
+    __asm__ volatile("fldcw %0" :: "m"(oldcw));
+    return out;
+}
+
+static int emulate_round(ucontext_t *uc, struct dec *d, uint8_t op) {
+    xmm128_t dst, src;
+    if (load_xmm(uc, d->reg, &dst)) return 0;
+    memset(&src, 0, sizeof(src));
+
+    if (d->mod == 3) {
+        if (load_xmm(uc, d->rm, &src)) return 0;
+    } else {
+        int ok = 0;
+        uintptr_t ea = calc_ea(uc, d, &ok);
+        if (!ok) return 0;
+        size_t n = (op == 0x0a) ? 4 : (op == 0x0b ? 8 : 16);
+        memcpy(&src, (const void *)ea, n);
+    }
+
+    uint8_t imm = *d->p++;
+    unsigned mode = sse_round_mode(uc, imm);
+    if (op == 0x08) {
+        for (int i = 0; i < 4; ++i) {
+            float x; memcpy(&x, &src.u32[i], 4);
+            x = round_float_x87(x, mode);
+            memcpy(&dst.u32[i], &x, 4);
+        }
+    } else if (op == 0x09) {
+        for (int i = 0; i < 2; ++i) {
+            double x; memcpy(&x, &src.u64[i], 8);
+            x = round_double_x87(x, mode);
+            memcpy(&dst.u64[i], &x, 8);
+        }
+    } else if (op == 0x0a) {
+        float x; memcpy(&x, &src.u32[0], 4);
+        x = round_float_x87(x, mode);
+        memcpy(&dst.u32[0], &x, 4);
+    } else if (op == 0x0b) {
+        double x; memcpy(&x, &src.u64[0], 8);
+        x = round_double_x87(x, mode);
+        memcpy(&dst.u64[0], &x, 8);
+    } else return 0;
+
+    if (store_xmm(uc, d->reg, &dst)) return 0;
+    set_rip(uc, d->p);
+    return 1;
+}
+
 static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
     struct dec d; parse_prefixes(&d,ip);
     if(!d.p66 || *d.p++!=0x0f) return 0;
@@ -353,8 +429,10 @@ static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
 
     if(map==0x3a){
         uint8_t op=*d.p++;
-        if(!(op==0x20||op==0x22||op==0x14||op==0x16||op==0x0c||op==0x0d||op==0x0e)) return 0;
+        if(!(op==0x20||op==0x22||op==0x14||op==0x16||op==0x0c||op==0x0d||op==0x0e||
+             op==0x08||op==0x09||op==0x0a||op==0x0b)) return 0;
         parse_modrm(&d);
+        if(op>=0x08 && op<=0x0b) return emulate_round(uc,&d,op);
         if(op==0x20){int ok=0;uint8_t src=read_rm8(uc,&d,&ok);if(!ok)return 0;uint8_t imm=*d.p++;xmm128_t x;if(load_xmm(uc,d.reg,&x))return 0;x.u8[imm&15]=src;if(store_xmm(uc,d.reg,&x))return 0;set_rip(uc,d.p);return 1;}
         if(op==0x22){int ok=0;xmm128_t x;if(load_xmm(uc,d.reg,&x))return 0;if(d.rex&8){uint64_t src=read_rm64(uc,&d,&ok);if(!ok)return 0;uint8_t imm=*d.p++;x.u64[imm&1]=src;}else{uint32_t src=read_rm32(uc,&d,&ok);if(!ok)return 0;uint8_t imm=*d.p++;x.u32[imm&3]=src;}if(store_xmm(uc,d.reg,&x))return 0;set_rip(uc,d.p);return 1;}
         if(op==0x14){uint8_t imm;xmm128_t x;if(load_xmm(uc,d.reg,&x))return 0;if(d.mod==3){imm=*d.p++;greg_t*g=gpr_slot(uc,d.rm);if(!g)return 0;*g=(greg_t)(uint64_t)x.u8[imm&15];}else{int ok=0;uintptr_t ea=calc_ea(uc,&d,&ok);if(!ok)return 0;imm=*d.p++;*(volatile uint8_t*)ea=x.u8[imm&15];}set_rip(uc,d.p);return 1;}
@@ -370,6 +448,9 @@ static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
         xmm128_t dst,src;
         if(load_xmm(uc,d.reg,&dst)||read_rm128(uc,&d,&src)) return 0;
         switch(op){
+            case 0x10:{xmm128_t mask;if(load_xmm(uc,0,&mask))return 0;for(int i=0;i<16;i++)if(mask.u8[i]&0x80)dst.u8[i]=src.u8[i];break;}
+            case 0x14:{xmm128_t mask;if(load_xmm(uc,0,&mask))return 0;for(int i=0;i<4;i++)if(mask.u32[i]&0x80000000u)dst.u32[i]=src.u32[i];break;}
+            case 0x15:{xmm128_t mask;if(load_xmm(uc,0,&mask))return 0;for(int i=0;i<2;i++)if(mask.u64[i]&0x8000000000000000ULL)dst.u64[i]=src.u64[i];break;}
             case 0x17:{uint64_t a=(dst.u64[0]&src.u64[0])|(dst.u64[1]&src.u64[1]);uint64_t b=((~dst.u64[0])&src.u64[0])|((~dst.u64[1])&src.u64[1]);greg_t*ef=&uc->uc_mcontext.gregs[REG_EFL];uint64_t f=(uint64_t)*ef;const uint64_t M=(1u<<0)|(1u<<2)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<11);f&=~M;if(!a)f|=1u<<6;if(!b)f|=1u<<0;*ef=(greg_t)f;break;}
             case 0x28: for(int i=0;i<2;i++) dst.i64[i]=(int64_t)dst.i32[i*2]*(int64_t)src.i32[i*2]; break;
             case 0x29: for(int i=0;i<2;i++) dst.u64[i]=(dst.u64[i]==src.u64[i])?UINT64_MAX:0; break;
