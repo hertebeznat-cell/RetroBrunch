@@ -43,7 +43,15 @@ Added full SSE4.1 PMOVSX*/PMOVZX* family (0F 38 20-25, 30-35), including PMOVSXB
 
 ## v0.4
 
-- Protects the SIGILL emulator handler from replacement through `sigaction()`, `__sigaction()`, or `signal()`.
-- Logs attempts to replace the SIGILL handler.
-- Keeps v0.3 PMOVSX/PMOVZX emulation and memory operand decoding.
-- Constructor installs the protected handler through libc's real `sigaction()`.
+- Kept the emulator handler installed when ChromeOS tried to replace SIGILL handling.
+- This proved why PID 1 previously died, but hard-blocking every SIGILL registration could interfere with normal ChromeOS behavior.
+
+## v0.5
+
+- Replaces hard blocking with **SIGILL handler chaining**.
+- ChromeOS may register its own SIGILL handler and receives normal `sigaction()` semantics.
+- Retro SSE remains the kernel-visible first handler.
+- Supported SSE4/POPCNT/CRC32 instructions are emulated first.
+- Unknown SIGILLs are forwarded to the ChromeOS downstream handler.
+- If a downstream handler returns without advancing RIP, Retro SSE terminates the process instead of looping forever on the same illegal instruction.
+- Registration logging is rate-limited to reduce early-boot log spam.

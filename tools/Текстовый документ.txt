@@ -1,0 +1,3 @@
+mkdir -p /mnt/ventoy
+mount "$(blkid -L Ventoy)" /mnt/ventoy
+sh /mnt/ventoy/alpine-quick-setup-v2.sh

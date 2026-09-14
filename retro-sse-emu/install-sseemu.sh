@@ -17,7 +17,7 @@ fi
 cp "$LIB" "$DEST"
 chown 0:0 "$DEST" 2>/dev/null || true
 # Important: secure-execution mode only accepts preloads from standard dirs
-# with the set-user-ID bit. This is why v0.2 uses /lib64 + basename below.
+# with the set-user-ID bit. This is why Retro SSE uses /lib64 + basename below.
 chmod 4755 "$DEST"
 
 # Remove v0.1 paths and duplicate entries, preserve unrelated preloads.
@@ -33,7 +33,7 @@ rm -f "$tmp"
 # Remove old experimental copy only after the new one is in place.
 rm -f "$ROOT/usr/lib64/retrobrunch/libretro_sse.so" 2>/dev/null || true
 
-echo "Retro SSE v0.2 installed: $DEST"
+echo "Retro SSE installed: $DEST"
 echo "Mode: $(stat -c '%a' "$DEST" 2>/dev/null || ls -l "$DEST")"
 echo "Preload entry: libretro_sse.so"
 echo "Persistent unknown-opcode log targets:"

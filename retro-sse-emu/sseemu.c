@@ -16,7 +16,7 @@
 #error "retro-sse-emu currently supports x86_64 only"
 #endif
 
-#define RETRO_SSE_VERSION "0.4"
+#define RETRO_SSE_VERSION "0.5"
 
 typedef union {
     uint8_t  u8[16];
@@ -392,13 +392,15 @@ static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
     return 0;
 }
 
+static void dispatch_downstream_sigill(int sig, siginfo_t *si, void *vctx,
+                                       ucontext_t *uc, const uint8_t *ip);
+
 static void sigill_handler(int sig, siginfo_t *si, void *vctx) {
-    (void)sig; (void)si;
     ucontext_t *uc=(ucontext_t*)vctx;
     const uint8_t *ip=(const uint8_t*)(uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
     if(emulate_popcnt(uc,ip) || emulate_crc32(uc,ip) || emulate_sse4(uc,ip)) return;
     log_unsupported(uc,ip);
-    _exit(132);
+    dispatch_downstream_sigill(sig, si, vctx, uc, ip);
 }
 
 
@@ -407,6 +409,9 @@ typedef sighandler_t (*real_signal_fn_t)(int, sighandler_t);
 static real_sigaction_fn_t real_sigaction_fn = NULL;
 static real_signal_fn_t real_signal_fn = NULL;
 static int installing_sigill = 0;
+static struct sigaction downstream_sigill;
+static volatile sig_atomic_t downstream_valid = 0;
+static volatile sig_atomic_t sigill_registration_logs = 0;
 
 static real_sigaction_fn_t resolve_real_sigaction(void) {
     if (!real_sigaction_fn)
@@ -432,9 +437,11 @@ static int force_sigill_handler(struct sigaction *oldact) {
     return rc;
 }
 
-static void log_sigill_guard(const char *api) {
-    char b[192], *p=b, *e=b+sizeof(b)-1;
-    p=append_str(p,e,"retro-sse v" RETRO_SSE_VERSION ": blocked SIGILL handler replacement via ");
+static void log_sigill_registration(const char *api) {
+    sig_atomic_t n = sigill_registration_logs++;
+    if (n >= 3) return;
+    char b[224], *p=b, *e=b+sizeof(b)-1;
+    p=append_str(p,e,"retro-sse v" RETRO_SSE_VERSION ": chained SIGILL handler via ");
     p=append_str(p,e,api);
     p=append_str(p,e," pid=");
     p=append_u64_dec(p,e,(uint64_t)getpid());
@@ -444,34 +451,73 @@ static void log_sigill_guard(const char *api) {
     log_raw(b,(size_t)(p-b));
 }
 
+static void log_chain_failure(ucontext_t *uc, const uint8_t *ip, const char *why) {
+    char b[320], *p=b, *e=b+sizeof(b)-1;
+    p=append_str(p,e,"retro-sse v" RETRO_SSE_VERSION ": downstream SIGILL ");
+    p=append_str(p,e,why);
+    p=append_str(p,e," pid=");
+    p=append_u64_dec(p,e,(uint64_t)getpid());
+    p=append_str(p,e," comm=");
+    p=append_str(p,e,proc_name);
+    p=append_str(p,e," rip=");
+    p=append_u64_hex(p,e,(uint64_t)(uintptr_t)ip);
+    p=append_str(p,e," rflags=");
+    p=append_u64_hex(p,e,(uint64_t)uc->uc_mcontext.gregs[REG_EFL]);
+    if(p<e)*p++='\n';
+    log_raw(b,(size_t)(p-b));
+}
+
+static int install_downstream_action(const struct sigaction *act,
+                                     struct sigaction *oldact,
+                                     const char *api) {
+    if (oldact) {
+        if (downstream_valid) *oldact = downstream_sigill;
+        else memset(oldact, 0, sizeof(*oldact));
+    }
+    if (act) {
+        downstream_sigill = *act;
+        downstream_valid = 1;
+        log_sigill_registration(api);
+    }
+    /* Keep our emulator as the kernel-visible SIGILL action. */
+    return force_sigill_handler(NULL);
+}
+
 int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
     real_sigaction_fn_t fn = resolve_real_sigaction();
     if (!fn) { errno = ENOSYS; return -1; }
-    if (signum != SIGILL || installing_sigill || act == NULL)
+    if (signum != SIGILL || installing_sigill)
         return fn(signum, act, oldact);
-
-    /* Preserve our emulator handler.  Still report the currently installed
-       action through oldact so callers that only save/restore state work. */
-    if (oldact && fn(SIGILL, NULL, oldact) != 0)
-        return -1;
-    log_sigill_guard("sigaction");
-    return force_sigill_handler(NULL);
+    if (act == NULL) {
+        if (oldact) {
+            if (downstream_valid) *oldact = downstream_sigill;
+            else memset(oldact, 0, sizeof(*oldact));
+        }
+        return 0;
+    }
+    return install_downstream_action(act, oldact, "sigaction");
 }
 
 int __sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
     return sigaction(signum, act, oldact);
 }
 
+int __libc_sigaction(int signum, const struct sigaction *act, struct sigaction *oldact) {
+    return sigaction(signum, act, oldact);
+}
+
 sighandler_t signal(int signum, sighandler_t handler) {
     if (signum == SIGILL) {
-        struct sigaction oldact;
-        (void)handler;
-        if (resolve_real_sigaction() && real_sigaction_fn(SIGILL, NULL, &oldact) == 0) {
-            log_sigill_guard("signal");
-            if (force_sigill_handler(NULL) == 0)
-                return oldact.sa_handler;
-        }
-        return SIG_ERR;
+        struct sigaction act, oldact;
+        memset(&act, 0, sizeof(act));
+        act.sa_handler = handler;
+        sigemptyset(&act.sa_mask);
+        act.sa_flags = SA_RESTART;
+        if (install_downstream_action(&act, &oldact, "signal") != 0)
+            return SIG_ERR;
+        if (oldact.sa_flags & SA_SIGINFO)
+            return SIG_DFL;
+        return oldact.sa_handler;
     }
     if (!real_signal_fn)
         real_signal_fn = (real_signal_fn_t)dlsym(RTLD_NEXT, "signal");
@@ -479,11 +525,45 @@ sighandler_t signal(int signum, sighandler_t handler) {
     return real_signal_fn(signum, handler);
 }
 
+static void dispatch_downstream_sigill(int sig, siginfo_t *si, void *vctx,
+                                       ucontext_t *uc, const uint8_t *ip) {
+    if (!downstream_valid) {
+        log_chain_failure(uc, ip, "missing; terminating");
+        _exit(128 + SIGILL);
+    }
+
+    struct sigaction a = downstream_sigill;
+    uintptr_t before = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+
+    if (a.sa_handler == SIG_DFL) {
+        log_chain_failure(uc, ip, "default; terminating");
+        _exit(128 + SIGILL);
+    }
+    if (a.sa_handler == SIG_IGN) {
+        log_chain_failure(uc, ip, "ignored but instruction cannot resume");
+        _exit(128 + SIGILL);
+    }
+
+    if (a.sa_flags & SA_SIGINFO)
+        a.sa_sigaction(sig, si, vctx);
+    else
+        a.sa_handler(sig);
+
+    /* A downstream handler that returns without changing the faulting RIP
+       would immediately fault again forever. Fail explicitly instead. */
+    if ((uintptr_t)uc->uc_mcontext.gregs[REG_RIP] == before) {
+        log_chain_failure(uc, ip, "returned without advancing RIP");
+        _exit(128 + SIGILL);
+    }
+}
+
 __attribute__((constructor))
 static void retro_sse_init(void) {
     init_persistent_log();
     stack_t ss; memset(&ss,0,sizeof(ss)); ss.ss_sp=altstack_mem; ss.ss_size=sizeof(altstack_mem); (void)sigaltstack(&ss,NULL);
     if(force_sigill_handler(&old_sigill)==0){
+        downstream_sigill = old_sigill;
+        downstream_valid = 1;
         char b[160],*p=b,*e=b+sizeof(b)-1;
         p=append_str(p,e,"retro-sse v" RETRO_SSE_VERSION ": active pid=");p=append_u64_dec(p,e,(uint64_t)getpid());p=append_str(p,e," comm=");p=append_str(p,e,proc_name);if(p<e)*p++='\n';log_raw(b,(size_t)(p-b));
     }
