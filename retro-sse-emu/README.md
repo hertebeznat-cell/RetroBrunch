@@ -46,7 +46,7 @@ Added full SSE4.1 PMOVSX*/PMOVZX* family (0F 38 20-25, 30-35), including PMOVSXB
 - Kept the emulator handler installed when ChromeOS tried to replace SIGILL handling.
 - This proved why PID 1 previously died, but hard-blocking every SIGILL registration could interfere with normal ChromeOS behavior.
 
-## v0.7
+## v0.8
 
 - Replaces hard blocking with **SIGILL handler chaining**.
 - ChromeOS may register its own SIGILL handler and receives normal `sigaction()` semantics.
@@ -55,3 +55,10 @@ Added full SSE4.1 PMOVSX*/PMOVZX* family (0F 38 20-25, 30-35), including PMOVSXB
 - Unknown SIGILLs are forwarded to the ChromeOS downstream handler.
 - If a downstream handler returns without advancing RIP, Retro SSE terminates the process instead of looping forever on the same illegal instruction.
 - Registration logging is rate-limited to reduce early-boot log spam.
+
+## v0.9 bulk SSE4 coverage
+
+Built from the v0.8 source after a static scan of ChromeOS ROOT-A.
+Adds bulk support for BLENDVPD, ROUNDPS/ROUNDPD/ROUNDSD, EXTRACTPS,
+INSERTPS, MOVNTDQA, PHMINPOSUW and PCMPISTRI, while keeping the v0.7/v0.8
+SIGILL chaining model and existing PBLENDVB/BLENDVPS/ROUNDSS support.

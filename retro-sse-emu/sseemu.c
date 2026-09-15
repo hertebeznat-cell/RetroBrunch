@@ -16,7 +16,7 @@
 #error "retro-sse-emu currently supports x86_64 only"
 #endif
 
-#define RETRO_SSE_VERSION "0.7"
+#define RETRO_SSE_VERSION "0.9"
 
 typedef union {
     uint8_t  u8[16];
@@ -403,6 +403,183 @@ static uint32_t roundss_soft_bits(uint32_t bits, unsigned mode) {
     return sign | base;
 }
 
+
+static int read_rm32_xmm_bits(ucontext_t *uc, struct dec *d, uint32_t *out);
+
+static uint64_t roundsd_soft_bits(uint64_t bits, unsigned mode) {
+    uint64_t sign = bits & 0x8000000000000000ull;
+    uint64_t absb = bits & 0x7fffffffffffffffull;
+    unsigned exp = (unsigned)((absb >> 52) & 0x7ffu);
+    uint64_t frac = absb & 0x000fffffffffffffull;
+    if (exp == 0x7ffu) return bits;
+    int e = (int)exp - 1023;
+    if (e >= 52) return bits;
+    if (absb == 0) return bits;
+    if (e < 0) {
+        switch (mode & 3u) {
+            case 0:
+                if (e < -1) return sign;
+                return frac ? (sign | 0x3ff0000000000000ull) : sign;
+            case 1: return sign ? 0xbff0000000000000ull : 0ull;
+            case 2: return sign ? 0x8000000000000000ull : 0x3ff0000000000000ull;
+            default: return sign;
+        }
+    }
+    unsigned frac_bits = 52u - (unsigned)e;
+    uint64_t mask = (1ull << frac_bits) - 1ull;
+    uint64_t discarded = absb & mask;
+    if (!discarded) return bits;
+    uint64_t base = absb & ~mask;
+    uint64_t step = 1ull << frac_bits;
+    switch (mode & 3u) {
+        case 0: {
+            uint64_t half = step >> 1;
+            if (discarded > half || (discarded == half && (base & step))) base += step;
+            break;
+        }
+        case 1: if (sign) base += step; break;
+        case 2: if (!sign) base += step; break;
+        default: break;
+    }
+    return sign | base;
+}
+
+static unsigned sse_round_mode(ucontext_t *uc, uint8_t imm) {
+    if (imm & 0x04) {
+        if (!uc->uc_mcontext.fpregs) return 0;
+        return (uc->uc_mcontext.fpregs->mxcsr >> 13) & 3u;
+    }
+    return imm & 3u;
+}
+
+static int read_rm64_xmm_bits(ucontext_t *uc, struct dec *d, uint64_t *out) {
+    if (d->mod == 3) {
+        xmm128_t x;
+        if (load_xmm(uc, d->rm, &x)) return -1;
+        *out = x.u64[0];
+        return 0;
+    }
+    int ok = 0;
+    uintptr_t ea = calc_ea(uc, d, &ok);
+    if (!ok) return -1;
+    memcpy(out, (const void *)ea, sizeof(*out));
+    return 0;
+}
+
+static int emulate_round_any(ucontext_t *uc, struct dec *d, uint8_t op) {
+    xmm128_t dst, src;
+    if (load_xmm(uc, d->reg, &dst)) return 0;
+    if (op == 0x0a) { /* ROUNDSS */
+        uint32_t b;
+        if (read_rm32_xmm_bits(uc, d, &b)) return 0;
+        uint8_t imm = *d->p++;
+        dst.u32[0] = roundss_soft_bits(b, sse_round_mode(uc, imm));
+    } else if (op == 0x0b) { /* ROUNDSD */
+        uint64_t b;
+        if (read_rm64_xmm_bits(uc, d, &b)) return 0;
+        uint8_t imm = *d->p++;
+        dst.u64[0] = roundsd_soft_bits(b, sse_round_mode(uc, imm));
+    } else {
+        if (read_rm128(uc, d, &src)) return 0;
+        uint8_t imm = *d->p++;
+        unsigned mode = sse_round_mode(uc, imm);
+        if (op == 0x08) for (int i=0;i<4;i++) dst.u32[i] = roundss_soft_bits(src.u32[i], mode);
+        else if (op == 0x09) for (int i=0;i<2;i++) dst.u64[i] = roundsd_soft_bits(src.u64[i], mode);
+        else return 0;
+    }
+    if (store_xmm(uc, d->reg, &dst)) return 0;
+    set_rip(uc, d->p);
+    return 1;
+}
+
+static int emulate_pcmpistri(ucontext_t *uc, struct dec *d) {
+    xmm128_t a, b;
+    if (load_xmm(uc, d->reg, &a) || read_rm128(uc, d, &b)) return 0;
+    uint8_t imm = *d->p++;
+    unsigned words = imm & 1u;
+    unsigned signed_elems = (imm >> 1) & 1u;
+    unsigned agg = (imm >> 2) & 3u;
+    unsigned pol = (imm >> 4) & 3u;
+    unsigned msb_index = (imm >> 6) & 1u;
+    unsigned n = words ? 8u : 16u;
+    unsigned la=n, lb=n;
+    if (words) {
+        for (unsigned i=0;i<n;i++) if (a.u16[i]==0) { la=i; break; }
+        for (unsigned i=0;i<n;i++) if (b.u16[i]==0) { lb=i; break; }
+    } else {
+        for (unsigned i=0;i<n;i++) if (a.u8[i]==0) { la=i; break; }
+        for (unsigned i=0;i<n;i++) if (b.u8[i]==0) { lb=i; break; }
+    }
+    uint32_t valid_mask = (n==16 ? 0xffffu : 0xffu);
+    uint32_t int1 = 0;
+    if (agg == 0) { /* equal any */
+        for (unsigned j=0;j<n;j++) if (j<lb) {
+            int hit=0;
+            for (unsigned i=0;i<la && !hit;i++) {
+                if (words) hit = (a.u16[i] == b.u16[j]);
+                else hit = (a.u8[i] == b.u8[j]);
+            }
+            if (hit) int1 |= 1u<<j;
+        }
+    } else if (agg == 1) { /* ranges: A pairs are low/high */
+        for (unsigned j=0;j<n;j++) if (j<lb) {
+            int hit=0;
+            for (unsigned i=0;i+1<la && !hit;i+=2) {
+                if (words) {
+                    if (signed_elems) { int16_t v=b.i16[j], lo=a.i16[i], hi=a.i16[i+1]; hit=(v>=lo && v<=hi); }
+                    else { uint16_t v=b.u16[j], lo=a.u16[i], hi=a.u16[i+1]; hit=(v>=lo && v<=hi); }
+                } else {
+                    if (signed_elems) { int8_t v=b.i8[j], lo=a.i8[i], hi=a.i8[i+1]; hit=(v>=lo && v<=hi); }
+                    else { uint8_t v=b.u8[j], lo=a.u8[i], hi=a.u8[i+1]; hit=(v>=lo && v<=hi); }
+                }
+            }
+            if (hit) int1 |= 1u<<j;
+        }
+    } else if (agg == 2) { /* equal each */
+        for (unsigned i=0;i<n;i++) {
+            int va=i<la, vb=i<lb;
+            int eq;
+            if (!va && !vb) eq=1;
+            else if (!va || !vb) eq=0;
+            else eq = words ? (a.u16[i]==b.u16[i]) : (a.u8[i]==b.u8[i]);
+            if (eq) int1 |= 1u<<i;
+        }
+    } else { /* equal ordered: A substring in B starting at each position */
+        for (unsigned j=0;j<n;j++) {
+            int ok=1;
+            for (unsigned i=0;i<la;i++) {
+                if (j+i >= lb) { ok=0; break; }
+                if (words ? (a.u16[i]!=b.u16[j+i]) : (a.u8[i]!=b.u8[j+i])) { ok=0; break; }
+            }
+            if (ok) int1 |= 1u<<j;
+        }
+    }
+    uint32_t mask_b = lb>=n ? valid_mask : ((1u<<lb)-1u);
+    uint32_t int2;
+    if (pol == 0) int2=int1;
+    else if (pol == 1) int2=(~int1)&valid_mask;
+    else if (pol == 2) int2=int1 & mask_b;
+    else int2=(~int1) & mask_b;
+
+    uint32_t idx=n;
+    if (int2) {
+        if (!msb_index) { for (unsigned i=0;i<n;i++) if (int2&(1u<<i)) { idx=i; break; } }
+        else { for (int i=(int)n-1;i>=0;i--) if (int2&(1u<<i)) { idx=(uint32_t)i; break; } }
+    }
+    if (write_gpr32(uc, 1, idx)) return 0; /* ECX */
+    greg_t *ef=&uc->uc_mcontext.gregs[REG_EFL];
+    uint64_t f=(uint64_t)*ef;
+    const uint64_t M=(1u<<0)|(1u<<2)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<11);
+    f &= ~M;
+    if (int2) f |= 1u<<0;        /* CF */
+    if (lb < n) f |= 1u<<6;      /* ZF */
+    if (la < n) f |= 1u<<7;      /* SF */
+    if (int2 & 1u) f |= 1u<<11;  /* OF */
+    *ef=(greg_t)f;
+    set_rip(uc, d->p);
+    return 1;
+}
+
 static int read_rm32_xmm_bits(ucontext_t *uc, struct dec *d, uint32_t *out) {
     if (d->mod == 3) {
         xmm128_t x;
@@ -424,21 +601,12 @@ static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
 
     if(map==0x3a){
         uint8_t op=*d.p++;
-        if(!(op==0x20||op==0x22||op==0x14||op==0x16||op==0x0a||op==0x0c||op==0x0d||op==0x0e)) return 0;
+        if(!(op==0x08||op==0x09||op==0x0a||op==0x0b||op==0x14||op==0x16||op==0x17||op==0x20||op==0x21||op==0x22||op==0x0c||op==0x0d||op==0x0e||op==0x63)) return 0;
         parse_modrm(&d);
-        if(op==0x0a){
-            xmm128_t dst; uint32_t srcbits;
-            if(load_xmm(uc,d.reg,&dst) || read_rm32_xmm_bits(uc,&d,&srcbits)) return 0;
-            uint8_t imm=*d.p++;
-            unsigned mode;
-            if(imm & 0x04) {
-                if(!uc->uc_mcontext.fpregs) return 0;
-                mode=(uc->uc_mcontext.fpregs->mxcsr >> 13) & 3u;
-            } else mode=imm & 3u;
-            dst.u32[0]=roundss_soft_bits(srcbits,mode);
-            if(store_xmm(uc,d.reg,&dst)) return 0;
-            set_rip(uc,d.p); return 1;
-        }
+        if(op>=0x08 && op<=0x0b) return emulate_round_any(uc,&d,op);
+        if(op==0x63) return emulate_pcmpistri(uc,&d);
+        if(op==0x17){xmm128_t x;if(load_xmm(uc,d.reg,&x))return 0;uint8_t imm;uint32_t v;if(d.mod==3){imm=*d.p++;v=x.u32[imm&3];if(write_rm32(uc,&d,v))return 0;}else{int ok=0;uintptr_t ea=calc_ea(uc,&d,&ok);if(!ok)return 0;imm=*d.p++;v=x.u32[imm&3];memcpy((void*)ea,&v,4);}set_rip(uc,d.p);return 1;}
+        if(op==0x21){xmm128_t dst,src;if(load_xmm(uc,d.reg,&dst))return 0;uint8_t imm;if(d.mod==3){if(load_xmm(uc,d.rm,&src))return 0;imm=*d.p++;dst.u32[(imm>>4)&3]=src.u32[(imm>>6)&3];}else{int ok=0;uintptr_t ea=calc_ea(uc,&d,&ok);if(!ok)return 0;uint32_t v;memcpy(&v,(void*)ea,4);imm=*d.p++;dst.u32[(imm>>4)&3]=v;}for(int i=0;i<4;i++)if(imm&(1u<<i))dst.u32[i]=0;if(store_xmm(uc,d.reg,&dst))return 0;set_rip(uc,d.p);return 1;}
         if(op==0x20){int ok=0;uint8_t src=read_rm8(uc,&d,&ok);if(!ok)return 0;uint8_t imm=*d.p++;xmm128_t x;if(load_xmm(uc,d.reg,&x))return 0;x.u8[imm&15]=src;if(store_xmm(uc,d.reg,&x))return 0;set_rip(uc,d.p);return 1;}
         if(op==0x22){int ok=0;xmm128_t x;if(load_xmm(uc,d.reg,&x))return 0;if(d.rex&8){uint64_t src=read_rm64(uc,&d,&ok);if(!ok)return 0;uint8_t imm=*d.p++;x.u64[imm&1]=src;}else{uint32_t src=read_rm32(uc,&d,&ok);if(!ok)return 0;uint8_t imm=*d.p++;x.u32[imm&3]=src;}if(store_xmm(uc,d.reg,&x))return 0;set_rip(uc,d.p);return 1;}
         if(op==0x14){uint8_t imm;xmm128_t x;if(load_xmm(uc,d.reg,&x))return 0;if(d.mod==3){imm=*d.p++;greg_t*g=gpr_slot(uc,d.rm);if(!g)return 0;*g=(greg_t)(uint64_t)x.u8[imm&15];}else{int ok=0;uintptr_t ea=calc_ea(uc,&d,&ok);if(!ok)return 0;imm=*d.p++;*(volatile uint8_t*)ea=x.u8[imm&15];}set_rip(uc,d.p);return 1;}
@@ -455,9 +623,12 @@ static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
         if(load_xmm(uc,d.reg,&dst)||read_rm128(uc,&d,&src)) return 0;
         switch(op){
             case 0x10:{xmm128_t mask;if(load_xmm(uc,0,&mask))return 0;for(int i=0;i<16;i++)if(mask.u8[i]&0x80)dst.u8[i]=src.u8[i];break;}
+            case 0x14:{xmm128_t mask;if(load_xmm(uc,0,&mask))return 0;for(int i=0;i<4;i++)if(mask.u32[i]&0x80000000u)dst.u32[i]=src.u32[i];break;}
+            case 0x15:{xmm128_t mask;if(load_xmm(uc,0,&mask))return 0;for(int i=0;i<2;i++)if(mask.u64[i]&0x8000000000000000ull)dst.u64[i]=src.u64[i];break;}
             case 0x17:{uint64_t a=(dst.u64[0]&src.u64[0])|(dst.u64[1]&src.u64[1]);uint64_t b=((~dst.u64[0])&src.u64[0])|((~dst.u64[1])&src.u64[1]);greg_t*ef=&uc->uc_mcontext.gregs[REG_EFL];uint64_t f=(uint64_t)*ef;const uint64_t M=(1u<<0)|(1u<<2)|(1u<<4)|(1u<<6)|(1u<<7)|(1u<<11);f&=~M;if(!a)f|=1u<<6;if(!b)f|=1u<<0;*ef=(greg_t)f;break;}
             case 0x28: for(int i=0;i<2;i++) dst.i64[i]=(int64_t)dst.i32[i*2]*(int64_t)src.i32[i*2]; break;
             case 0x29: for(int i=0;i<2;i++) dst.u64[i]=(dst.u64[i]==src.u64[i])?UINT64_MAX:0; break;
+            case 0x2a: dst=src; break; /* MOVNTDQA */
             case 0x2b:{xmm128_t r;for(int i=0;i<4;i++){int32_t a=dst.i32[i],b=src.i32[i];uint32_t ua=(a<0)?0u:(a>65535?65535u:(uint32_t)a);uint32_t ub=(b<0)?0u:(b>65535?65535u:(uint32_t)b);r.u16[i]=(uint16_t)ua;r.u16[i+4]=(uint16_t)ub;}dst=r;break;}
             case 0x37: for(int i=0;i<2;i++) dst.u64[i]=(dst.i64[i]>src.i64[i])?UINT64_MAX:0; break;
             case 0x38: for(int i=0;i<16;i++) if(src.i8[i]<dst.i8[i]) dst.i8[i]=src.i8[i]; break;
@@ -469,6 +640,7 @@ static int emulate_sse4(ucontext_t *uc, const uint8_t *ip) {
             case 0x3e: for(int i=0;i<8;i++) if(src.u16[i]>dst.u16[i]) dst.u16[i]=src.u16[i]; break;
             case 0x3f: for(int i=0;i<4;i++) if(src.u32[i]>dst.u32[i]) dst.u32[i]=src.u32[i]; break;
             case 0x40: for(int i=0;i<4;i++) dst.u32[i]=(uint32_t)((uint64_t)dst.u32[i]*(uint64_t)src.u32[i]); break;
+            case 0x41:{uint16_t minv=src.u16[0],idx=0;for(uint16_t i=1;i<8;i++)if(src.u16[i]<minv){minv=src.u16[i];idx=i;}memset(&dst,0,sizeof(dst));dst.u16[0]=minv;dst.u16[1]=idx;break;}
             default: return 0;
         }
         if(op!=0x17 && store_xmm(uc,d.reg,&dst)) return 0;
