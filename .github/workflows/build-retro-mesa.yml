@@ -1,0 +1,125 @@
+name: Build RetroMesa Pineview
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - retrobrunch
+    paths:
+      - ".github/workflows/build-retro-mesa.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            meson \
+            ninja-build \
+            pkg-config \
+            python3 \
+            clang \
+            lld \
+            libc++-dev \
+            libc++abi-dev \
+            libdrm-dev \
+            libexpat1-dev \
+            libzstd-dev \
+            zlib1g-dev \
+            libunwind-dev \
+            libpciaccess-dev \
+            bison \
+            flex
+
+      - name: Clone exact ChromeOS Mesa
+        run: |
+          git clone https://chromium.googlesource.com/chromiumos/third_party/mesa mesa
+          cd mesa
+          git checkout 7e19431c4486b880d8f9b8681d50222ba44d651e
+          git rev-parse HEAD
+          git log -1 --oneline
+
+      - name: Configure Pineview Mesa
+        working-directory: mesa
+        env:
+          CC: clang
+          CXX: clang++
+          CFLAGS: >-
+            -O2
+            -march=x86-64
+            -mtune=generic
+            -mno-sse4.1
+            -mno-sse4.2
+            -mno-avx
+            -mno-avx2
+          CXXFLAGS: >-
+            -O2
+            -march=x86-64
+            -mtune=generic
+            -mno-sse4.1
+            -mno-sse4.2
+            -mno-avx
+            -mno-avx2
+            -stdlib=libc++
+          LDFLAGS: -stdlib=libc++
+        run: |
+          meson setup build \
+            --buildtype=release \
+            --prefix=/opt/retromesa \
+            --libdir=lib64 \
+            -Dgallium-drivers=i915 \
+            -Dvulkan-drivers= \
+            -Dllvm=disabled \
+            -Degl=enabled \
+            -Dgbm=enabled \
+            -Dgles1=disabled \
+            -Dgles2=enabled \
+            -Dglx=disabled \
+            -Dplatforms=
+
+      - name: Build
+        working-directory: mesa
+        run: |
+          ninja -C build -j2
+
+      - name: Install
+        working-directory: mesa
+        run: |
+          DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
+
+      - name: Collect package
+        run: |
+          mkdir -p out/lib64
+
+          cp -av stage/opt/retromesa/lib64/libgallium_dri.so* out/lib64/ || true
+          cp -av stage/opt/retromesa/lib64/libEGL.so* out/lib64/ || true
+          cp -av stage/opt/retromesa/lib64/libGLESv2.so* out/lib64/ || true
+          cp -av stage/opt/retromesa/lib64/libgbm.so* out/lib64/ || true
+          cp -av stage/opt/retromesa/lib64/libglapi.so* out/lib64/ || true
+
+          {
+            echo "RetroMesa Pineview R149"
+            echo "Commit:"
+            git -C mesa rev-parse HEAD
+            echo
+            echo "Driver symbols:"
+            nm -D out/lib64/libgallium_dri.so* 2>/dev/null | grep __driDriverGetExtensions_ || true
+            echo
+            echo "Dependencies:"
+            readelf -d out/lib64/libgallium_dri.so* 2>/dev/null | grep -E 'NEEDED|SONAME' || true
+            echo
+            echo "Hashes:"
+            sha256sum out/lib64/*
+          } > out/manifest.txt
+
+          tar -C out -czf retromesa-r149-pineview.tar.gz .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: retromesa-r149-pineview
+          path: retromesa-r149-pineview.tar.gz
