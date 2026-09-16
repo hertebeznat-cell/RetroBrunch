@@ -1,4 +1,4 @@
-﻿name: Build RetroMesa Pineview
+name: Build RetroMesa Pineview
 
 on:
   workflow_dispatch:
@@ -21,7 +21,8 @@ jobs:
             meson \
             ninja-build \
             pkg-config \
-            python3 \`r`n            python3-mako \
+            python3 \
+            python3-mako \
             clang \
             lld \
             libc++-dev \
@@ -82,24 +83,20 @@ jobs:
 
       - name: Build
         working-directory: mesa
-        run: |
-          ninja -C build -j2
+        run: ninja -C build -j2
 
       - name: Install
         working-directory: mesa
-        run: |
-          DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
+        run: DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
 
       - name: Collect package
         run: |
           mkdir -p out/lib64
-
           cp -av stage/opt/retromesa/lib64/libgallium_dri.so* out/lib64/ || true
           cp -av stage/opt/retromesa/lib64/libEGL.so* out/lib64/ || true
           cp -av stage/opt/retromesa/lib64/libGLESv2.so* out/lib64/ || true
           cp -av stage/opt/retromesa/lib64/libgbm.so* out/lib64/ || true
           cp -av stage/opt/retromesa/lib64/libglapi.so* out/lib64/ || true
-
           {
             echo "RetroMesa Pineview R149"
             echo "Commit:"
@@ -114,7 +111,6 @@ jobs:
             echo "Hashes:"
             sha256sum out/lib64/*
           } > out/manifest.txt
-
           tar -C out -czf retromesa-r149-pineview.tar.gz .
 
       - name: Upload artifact
