@@ -30,7 +30,6 @@ jobs:
             libexpat1-dev \
             libzstd-dev \
             zlib1g-dev \
-            libunwind-dev \
             libpciaccess-dev \
             bison \
             flex
