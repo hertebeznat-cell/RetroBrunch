@@ -1,4 +1,4 @@
-name: Build RetroMesa Pineview
+﻿name: Build RetroMesa Pineview
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ jobs:
             meson \
             ninja-build \
             pkg-config \
-            python3 \
+            python3 \`r`n            python3-mako \
             clang \
             lld \
             libc++-dev \
