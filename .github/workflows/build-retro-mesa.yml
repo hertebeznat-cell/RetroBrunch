@@ -74,8 +74,8 @@ jobs:
             -Dgallium-drivers=i915 \
             -Dvulkan-drivers= \
             -Dllvm=disabled \
-            -Degl=disabled \
-            -Dgbm=disabled \
+            -Degl=enabled \
+            -Dgbm=enabled \
             -Dgles1=disabled \
             -Dgles2=enabled \
             -Dglx=disabled \
