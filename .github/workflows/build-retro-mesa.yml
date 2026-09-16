@@ -1,4 +1,4 @@
-﻿name: Build RetroMesa Pineview
+name: Build RetroMesa Pineview
 
 on:
   workflow_dispatch:
@@ -74,8 +74,8 @@ jobs:
             -Dgallium-drivers=i915 \
             -Dvulkan-drivers= \
             -Dllvm=disabled \
-            -Degl=enabled \
-            -Dgbm=enabled \
+            -Degl=disabled \
+            -Dgbm=disabled \
             -Dgles1=disabled \
             -Dgles2=enabled \
             -Dglx=disabled \
@@ -93,10 +93,6 @@ jobs:
         run: |
           mkdir -p out/lib64
           cp -av mesa/build/src/gallium/targets/dri/libgallium-24.2.3.so out/lib64/libgallium_dri.so
-          cp -av stage/opt/retromesa/lib64/libEGL.so* out/lib64/ || true
-          cp -av stage/opt/retromesa/lib64/libGLESv2.so* out/lib64/ || true
-          cp -av stage/opt/retromesa/lib64/libgbm.so* out/lib64/ || true
-          cp -av stage/opt/retromesa/lib64/libglapi.so* out/lib64/ || true
           {
             echo "RetroMesa Pineview R149"
             echo "Commit:"
