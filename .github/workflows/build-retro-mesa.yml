@@ -1,4 +1,4 @@
-name: Build RetroMesa Pineview
+﻿name: Build RetroMesa Pineview
 
 on:
   workflow_dispatch:
@@ -92,7 +92,7 @@ jobs:
       - name: Collect package
         run: |
           mkdir -p out/lib64
-          cp -av stage/opt/retromesa/lib64/libgallium_dri.so* out/lib64/ || true
+          cp -av mesa/build/src/gallium/targets/dri/libgallium-24.2.3.so out/lib64/libgallium_dri.so
           cp -av stage/opt/retromesa/lib64/libEGL.so* out/lib64/ || true
           cp -av stage/opt/retromesa/lib64/libGLESv2.so* out/lib64/ || true
           cp -av stage/opt/retromesa/lib64/libgbm.so* out/lib64/ || true
@@ -118,3 +118,4 @@ jobs:
         with:
           name: retromesa-r149-pineview
           path: retromesa-r149-pineview.tar.gz
+
