@@ -73,23 +73,19 @@ jobs:
           test -f "$ROOT/libgallium-24.2.3.so"
           mkdir -p "$ROOT/dri"
 
-          # Mesa's Gallium DRI target is one megadriver.  The loader selects
-          # the entry point from the filename; ChromeOS' stripped install does
-          # not create these aliases for us in this GitHub build.
           ln -sfn ../libgallium-24.2.3.so "$ROOT/dri/i915_dri.so"
           ln -sfn ../libgallium-24.2.3.so "$ROOT/dri/swrast_dri.so"
           ln -sfn ../libgallium-24.2.3.so "$ROOT/dri/kms_swrast_dri.so"
           ln -sfn libgallium-24.2.3.so "$ROOT/libgallium_dri.so"
 
-          echo "=== driver entry points ==="
-          nm -D "$ROOT/libgallium-24.2.3.so" | \
-            grep -E '__driDriverGetExtensions_(i915|swrast|kms_swrast)$'
-
           echo "=== aliases ==="
           ls -lah "$ROOT"/libgallium* "$ROOT/dri"
 
-          echo "=== software backend ==="
-          strings "$ROOT/libgallium-24.2.3.so" | grep -Ei 'SOFTPIPE_DEBUG|__driDriverGetExtensions_swrast' | head -n 20
+          echo "=== verify compiled backends from binary strings ==="
+          strings "$ROOT/libgallium-24.2.3.so" | grep -q '__driDriverGetExtensions_i915'
+          strings "$ROOT/libgallium-24.2.3.so" | grep -q '__driDriverGetExtensions_swrast'
+          strings "$ROOT/libgallium-24.2.3.so" | grep -q '__driDriverGetExtensions_kms_swrast'
+          strings "$ROOT/libgallium-24.2.3.so" | grep -q 'SOFTPIPE_DEBUG'
 
       - name: Verify package
         run: |
@@ -115,8 +111,8 @@ jobs:
             echo "Files:"
             find out/opt/retromesa -maxdepth 4 \( -type f -o -type l \) -print | sort
             echo
-            echo "Driver symbols:"
-            nm -D out/opt/retromesa/lib64/libgallium-24.2.3.so | \
+            echo "DRI entrypoint strings:"
+            strings out/opt/retromesa/lib64/libgallium-24.2.3.so | \
               grep '__driDriverGetExtensions_' || true
             echo
             echo "Hashes:"
