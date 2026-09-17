@@ -17,23 +17,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git \
-            meson \
-            ninja-build \
-            pkg-config \
-            python3 \
-            python3-mako \
-            clang \
-            lld \
-            libc++-dev \
-            libc++abi-dev \
-            libdrm-dev \
-            libexpat1-dev \
-            libzstd-dev \
-            zlib1g-dev \
-            libpciaccess-dev \
-            bison \
-            flex
+            git meson ninja-build pkg-config python3 python3-mako \
+            clang lld libc++-dev libc++abi-dev \
+            libdrm-dev libexpat1-dev libzstd-dev zlib1g-dev \
+            libpciaccess-dev bison flex
 
       - name: Clone exact ChromeOS Mesa
         run: |
@@ -49,21 +36,11 @@ jobs:
           CC: clang
           CXX: clang++
           CFLAGS: >-
-            -O2
-            -march=x86-64
-            -mtune=generic
-            -mno-sse4.1
-            -mno-sse4.2
-            -mno-avx
-            -mno-avx2
+            -O2 -march=x86-64 -mtune=generic
+            -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2
           CXXFLAGS: >-
-            -O2
-            -march=x86-64
-            -mtune=generic
-            -mno-sse4.1
-            -mno-sse4.2
-            -mno-avx
-            -mno-avx2
+            -O2 -march=x86-64 -mtune=generic
+            -mno-sse4.1 -mno-sse4.2 -mno-avx -mno-avx2
             -stdlib=libc++
           LDFLAGS: -stdlib=libc++
         run: |
@@ -89,42 +66,58 @@ jobs:
         working-directory: mesa
         run: DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
 
-      - name: Verify i915 and softpipe were built
+      - name: Create DRI megadriver aliases
         run: |
-          echo "=== Installed RetroMesa tree ==="
-          find stage/opt/retromesa -maxdepth 4 \( -type f -o -type l \) | sort
-          echo
-          echo "=== DRI drivers ==="
-          find stage/opt/retromesa -path '*/dri/*' -maxdepth 5 -ls || true
-          echo
-          echo "=== Gallium software strings ==="
-          find stage/opt/retromesa -type f \( -name 'libgallium*.so*' -o -name 'swrast_dri.so' \) -print0 | \
-            xargs -0 -r strings | grep -Ei 'softpipe|swrast|i915' | sort -u | head -n 100 || true
-          echo
-          test -e stage/opt/retromesa/lib64/dri/i915_dri.so
-          test -e stage/opt/retromesa/lib64/dri/swrast_dri.so
-          strings stage/opt/retromesa/lib64/libgallium_dri.so 2>/dev/null | grep -qi softpipe || \
-            strings stage/opt/retromesa/lib64/dri/swrast_dri.so | grep -qi softpipe
+          set -eux
+          ROOT=stage/opt/retromesa/lib64
+          test -f "$ROOT/libgallium-24.2.3.so"
+          mkdir -p "$ROOT/dri"
+
+          # Mesa's Gallium DRI target is one megadriver.  The loader selects
+          # the entry point from the filename; ChromeOS' stripped install does
+          # not create these aliases for us in this GitHub build.
+          ln -sfn ../libgallium-24.2.3.so "$ROOT/dri/i915_dri.so"
+          ln -sfn ../libgallium-24.2.3.so "$ROOT/dri/swrast_dri.so"
+          ln -sfn ../libgallium-24.2.3.so "$ROOT/dri/kms_swrast_dri.so"
+          ln -sfn libgallium-24.2.3.so "$ROOT/libgallium_dri.so"
+
+          echo "=== driver entry points ==="
+          nm -D "$ROOT/libgallium-24.2.3.so" | \
+            grep -E '__driDriverGetExtensions_(i915|swrast|kms_swrast)$'
+
+          echo "=== aliases ==="
+          ls -lah "$ROOT"/libgallium* "$ROOT/dri"
+
+          echo "=== software backend ==="
+          strings "$ROOT/libgallium-24.2.3.so" | grep -Ei 'SOFTPIPE_DEBUG|__driDriverGetExtensions_swrast' | head -n 20
+
+      - name: Verify package
+        run: |
+          set -eux
+          ROOT=stage/opt/retromesa/lib64
+          test -L "$ROOT/dri/i915_dri.so"
+          test -L "$ROOT/dri/swrast_dri.so"
+          test -L "$ROOT/dri/kms_swrast_dri.so"
+          test -L "$ROOT/libgallium_dri.so"
+          test -f "$ROOT/libEGL.so.1.0.0"
+          test -f "$ROOT/libGLESv2.so.2.0.0"
+          strings "$ROOT/libgallium-24.2.3.so" | grep -q SOFTPIPE_DEBUG
 
       - name: Collect package
         run: |
           mkdir -p out
           cp -a stage/opt out/opt
           {
-            echo "RetroMesa Pineview R149 + softpipe fallback"
+            echo "RetroMesa Pineview R149 + i915 + softpipe"
             echo "Mesa commit:"
             git -C mesa rev-parse HEAD
             echo
-            echo "DRI drivers:"
-            find out/opt/retromesa/lib64/dri -maxdepth 1 \( -type f -o -type l \) | sort
+            echo "Files:"
+            find out/opt/retromesa -maxdepth 4 \( -type f -o -type l \) -print | sort
             echo
             echo "Driver symbols:"
-            find out/opt/retromesa -type f -name '*.so*' -print0 | \
-              xargs -0 -r nm -D 2>/dev/null | grep '__driDriverGetExtensions_' || true
-            echo
-            echo "Softpipe strings:"
-            find out/opt/retromesa -type f \( -name 'libgallium*.so*' -o -name 'swrast_dri.so' \) -print0 | \
-              xargs -0 -r strings | grep -Ei 'softpipe|swrast' | sort -u | head -n 100 || true
+            nm -D out/opt/retromesa/lib64/libgallium-24.2.3.so | \
+              grep '__driDriverGetExtensions_' || true
             echo
             echo "Hashes:"
             find out/opt/retromesa -type f -print0 | sort -z | xargs -0 sha256sum
