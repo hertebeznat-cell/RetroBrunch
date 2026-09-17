@@ -43,7 +43,7 @@ jobs:
           git rev-parse HEAD
           git log -1 --oneline
 
-      - name: Configure Pineview Mesa
+      - name: Configure Pineview Mesa with software fallback
         working-directory: mesa
         env:
           CC: clang
@@ -71,7 +71,7 @@ jobs:
             --buildtype=release \
             --prefix=/opt/retromesa \
             --libdir=lib64 \
-            -Dgallium-drivers=i915 \
+            -Dgallium-drivers=i915,swrast \
             -Dvulkan-drivers= \
             -Dllvm=disabled \
             -Degl=enabled \
@@ -89,29 +89,52 @@ jobs:
         working-directory: mesa
         run: DESTDIR="$GITHUB_WORKSPACE/stage" ninja -C build install
 
+      - name: Verify i915 and swrast were built
+        run: |
+          echo "=== Installed RetroMesa tree ==="
+          find stage/opt/retromesa -maxdepth 4 -type f -o -type l | sort
+          echo
+          echo "=== DRI drivers ==="
+          find stage/opt/retromesa -path '*/dri/*' -maxdepth 5 -ls || true
+          echo
+          echo "=== Gallium software strings ==="
+          find stage/opt/retromesa -type f \( -name 'libgallium*.so*' -o -name 'swrast_dri.so' \) -print0 | \
+            xargs -0 -r strings | grep -Ei 'softpipe|swrast|i915' | sort -u | head -n 100 || true
+          echo
+          test -e stage/opt/retromesa/lib64/dri/i915_dri.so
+          test -e stage/opt/retromesa/lib64/dri/swrast_dri.so
+
       - name: Collect package
         run: |
-          mkdir -p out/lib64
-          cp -av mesa/build/src/gallium/targets/dri/libgallium-24.2.3.so out/lib64/libgallium_dri.so
+          mkdir -p out
+          cp -a stage/opt out/opt
           {
-            echo "RetroMesa Pineview R149"
-            echo "Commit:"
+            echo "RetroMesa Pineview R149 + swrast/softpipe fallback"
+            echo "Mesa commit:"
             git -C mesa rev-parse HEAD
             echo
+            echo "DRI drivers:"
+            find out/opt/retromesa/lib64/dri -maxdepth 1 -type f -o -type l | sort
+            echo
             echo "Driver symbols:"
-            nm -D out/lib64/libgallium_dri.so* 2>/dev/null | grep __driDriverGetExtensions_ || true
+            find out/opt/retromesa -type f -name '*.so*' -print0 | \
+              xargs -0 -r nm -D 2>/dev/null | grep '__driDriverGetExtensions_' || true
             echo
             echo "Dependencies:"
-            readelf -d out/lib64/libgallium_dri.so* 2>/dev/null | grep -E 'NEEDED|SONAME' || true
+            find out/opt/retromesa -type f -name '*.so*' -print0 | \
+              xargs -0 -r readelf -d 2>/dev/null | grep -E 'NEEDED|SONAME' || true
+            echo
+            echo "Softpipe/swrast strings:"
+            find out/opt/retromesa -type f \( -name 'libgallium*.so*' -o -name 'swrast_dri.so' \) -print0 | \
+              xargs -0 -r strings | grep -Ei 'softpipe|swrast' | sort -u | head -n 100 || true
             echo
             echo "Hashes:"
-            sha256sum out/lib64/*
+            find out/opt/retromesa -type f -print0 | sort -z | xargs -0 sha256sum
           } > out/manifest.txt
-          tar -C out -czf retromesa-r149-pineview.tar.gz .
+          tar -C out -czf retromesa-r149-pineview-swrast.tar.gz .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: retromesa-r149-pineview
-          path: retromesa-r149-pineview.tar.gz
-
+          name: retromesa-r149-pineview-swrast
+          path: retromesa-r149-pineview-swrast.tar.gz
